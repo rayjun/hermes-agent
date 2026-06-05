@@ -158,7 +158,7 @@ RUN npm install --prefer-offline --no-audit && \
 # lazy-install access to PyPI (often blocked in containerized envs).
 #
 # The hindsight memory provider's client (hindsight-client) is baked in
-# for the same reason: it lazy-installs into /opt/hermes/.venv at first
+# for the same reason: it lazy-installs into /opt/hermes/venv at first
 # use, which lives inside the (immutable) image layer rather than the
 # mounted /opt/data volume, so it is lost on every container recreate /
 # image update and recall/retain then fails with
@@ -188,13 +188,13 @@ RUN cd web && npm run build && \
 # /opt/hermes/gateway is runtime-writable: Python may create __pycache__ and
 # gateway state artifacts beneath the package after services drop privileges,
 # especially when the hermes UID is remapped at boot (#27221).
-# The .venv MUST remain hermes-writable so lazy_deps.py can install
+# The venv MUST remain hermes-writable so lazy_deps.py can install
 # remaining optional platform packages and future pin bumps at first use.
 # Without this, `uv pip install` fails with EACCES and adapters silently
 # fail to load.  See tools/lazy_deps.py.
 USER root
 RUN chmod -R a+rX /opt/hermes && \
-    chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/gateway /opt/hermes/node_modules
+    chown -R hermes:hermes /opt/hermes/venv /opt/hermes/ui-tui /opt/hermes/gateway /opt/hermes/node_modules
 # Start as root so the s6-overlay stage2 hook can usermod/groupmod and chown
 # the data volume. Each supervised service then drops to the hermes user via
 # `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services
@@ -285,7 +285,7 @@ ENV HERMES_HOME=/opt/data
 # the opt-out env var (HERMES_DOCKER_EXEC_AS_ROOT=1).
 COPY --chmod=0755 docker/hermes-exec-shim.sh /opt/hermes/bin/hermes
 
-# Pre-s6 entrypoint.sh did `source .venv/bin/activate` which exported
+# Pre-s6 entrypoint.sh did `source venv/bin/activate` which exported
 # the venv bin onto PATH; Architecture B's main-wrapper.sh does the
 # same for the container's main process, but `docker exec` and our
 # cont-init.d scripts don't pass through the wrapper. Expose the venv
@@ -296,7 +296,7 @@ COPY --chmod=0755 docker/hermes-exec-shim.sh /opt/hermes/bin/hermes
 # shim wins PATH resolution. The shim's last act is to exec the venv
 # binary by absolute path, so this PATH ordering is transparent to
 # every other consumer.
-ENV PATH="/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:${PATH}"
+ENV PATH="/opt/hermes/bin:/opt/hermes/venv/bin:/opt/data/.local/bin:${PATH}"
 RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
 

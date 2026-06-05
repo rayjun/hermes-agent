@@ -227,14 +227,14 @@ stdenv.mkDerivation (finalAttrs: {
       STAMP_VALUE="${pyprojectHash}:${uvLockHash}"
       if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
         echo "hermes-agent: installing Python dependencies..."
-        uv venv .venv --python ${python312}/bin/python3 2>/dev/null || true
-        source .venv/bin/activate
+        uv venv venv --python ${python312}/bin/python3 2>/dev/null || true
+        source venv/bin/activate
         uv pip install -e ".[all]"
         [ -d mini-swe-agent ] && uv pip install -e ./mini-swe-agent 2>/dev/null || true
         mkdir -p .nix-stamps
         echo "$STAMP_VALUE" > "$STAMP"
       else
-        source .venv/bin/activate
+        source venv/bin/activate
         export HERMES_PYTHON=${hermesVenv}/bin/python3
       fi
     '';

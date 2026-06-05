@@ -13,7 +13,7 @@
 # Tool resolution: the hermes wrapper uses --suffix PATH for nix store tools,
 # so apt/uv-installed versions take priority. The container entrypoint provisions
 # extensible tools on first boot: nodejs/npm via apt, uv via curl, and a Python
-# 3.11 venv (bootstrapped entirely by uv) at ~/.venv with pip seeded. Agents get
+# 3.11 venv (bootstrapped entirely by uv) at ~/venv with pip seeded. Agents get
 # writable tool prefixes for npm i -g, pip install, uv tool install, etc.
 #
 # Usage:
@@ -159,17 +159,17 @@
       # Python 3.12 venv — gives the agent a writable Python with pip.
       # --seed includes pip/setuptools so bare `pip install` works.
       _UV_BIN="$TARGET_HOME/.local/bin/uv"
-      if [ ! -d "$TARGET_HOME/.venv" ] && [ -x "$_UV_BIN" ]; then
+      if [ ! -d "$TARGET_HOME/venv" ] && [ -x "$_UV_BIN" ]; then
         su -s /bin/sh "$TARGET_USER" -c "
           export PATH=\"\$HOME/.local/bin:\$PATH\"
           uv python install 3.12
-          uv venv --python 3.12 --seed \"\$HOME/.venv\"
+          uv venv --python 3.12 --seed \"\$HOME/venv\"
         " || true
       fi
 
       # Put the agent venv first on PATH so python/pip resolve to writable copies
-      if [ -d "$TARGET_HOME/.venv/bin" ]; then
-        export PATH="$TARGET_HOME/.venv/bin:$PATH"
+      if [ -d "$TARGET_HOME/venv/bin" ]; then
+        export PATH="$TARGET_HOME/venv/bin:$PATH"
       fi
 
       if command -v setpriv >/dev/null 2>&1; then

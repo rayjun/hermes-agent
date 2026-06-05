@@ -61,8 +61,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv venv .venv --python 3.11
-          source .venv/bin/activate
+          uv venv venv --python 3.11
+          source venv/bin/activate
           uv pip install -e ".[all,dev]"
 
       - name: Run tests (slice ${{ matrix.slice }}/6)
@@ -90,7 +90,7 @@ jobs:
         # estimate and get split roughly evenly by count — still correct,
         # just not perfectly balanced.
         run: |
-          source .venv/bin/activate
+          source venv/bin/activate
           python scripts/run_tests_parallel.py --slice ${{ matrix.slice }}/6
         env:
           # Ensure tests don't accidentally call real APIs
@@ -167,18 +167,18 @@ jobs:
 
       - name: Install dependencies
         run: |
-          uv venv .venv --python 3.11
-          source .venv/bin/activate
+          uv venv venv --python 3.11
+          source venv/bin/activate
           uv pip install -e ".[all,dev]"
 
       - name: Packaged-wheel i18n smoke test
         run: |
-          source .venv/bin/activate
+          source venv/bin/activate
           python -m pytest -m integration tests/test_wheel_locales_e2e.py -v
 
       - name: Run e2e tests
         run: |
-          source .venv/bin/activate
+          source venv/bin/activate
           python -m pytest tests/e2e/ -v --tb=short
         env:
           OPENROUTER_API_KEY: ""

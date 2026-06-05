@@ -125,7 +125,7 @@ docker run -it --rm \
 或者，如果你已通过 Docker Desktop 等方式在运行中的容器内打开了终端，直接运行：
 
 ```sh
-/opt/hermes/.venv/bin/hermes
+/opt/hermes/venv/bin/hermes
 ```
 
 ## 持久化卷

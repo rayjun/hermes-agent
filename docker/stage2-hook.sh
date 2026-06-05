@@ -31,7 +31,7 @@ as_hermes() { [ "$(id -u)" = 0 ] || { "$@"; return; }; s6-setuidgid hermes "$@";
 # Under s6-overlay this no longer works: the bootstrap (UID remap, volume +
 # build-tree chown, config seeding) all require root, and they're skipped when
 # the container starts non-root. The baked image trees (/opt/data, /opt/hermes/
-# .venv, ui-tui, node_modules) stay owned by the hermes build UID (10000), so an
+# venv, ui-tui, node_modules) stay owned by the hermes build UID (10000), so an
 # arbitrary `--user` UID can't write them — the runtime then fails with EACCES
 # on a bind mount, or hard-crashes on a named volume (Docker initialises the
 # volume from the image as UID 10000, and the non-root start can't even `cd`
@@ -210,7 +210,7 @@ fi
 # --- Fix ownership of build trees under $INSTALL_DIR ---
 # Hermes-owned trees under $INSTALL_DIR must be re-chowned whenever the
 # runtime hermes UID no longer owns them — otherwise:
-#   - .venv: lazy_deps.py cannot install platform packages (discord.py,
+#   - venv: lazy_deps.py cannot install platform packages (discord.py,
 #     telegram, slack, etc.) with EACCES (#15012, #21100)
 #   - ui-tui: esbuild rebuilds dist/entry.js on every TUI launch (when
 #     the source mtime is newer than dist/ or when HERMES_TUI_FORCE_BUILD
@@ -239,11 +239,11 @@ fi
 # when the venv is not already owned by the runtime hermes UID. Idempotent
 # and skips the expensive recursive chown on every restart once ownership
 # is settled.
-venv_owner=$(stat -c %u "$INSTALL_DIR/.venv" 2>/dev/null || echo "")
+venv_owner=$(stat -c %u "$INSTALL_DIR/venv" 2>/dev/null || echo "")
 if [ -n "$venv_owner" ] && [ "$venv_owner" != "$actual_hermes_uid" ]; then
     echo "[stage2] Fixing ownership of build trees under $INSTALL_DIR to hermes ($actual_hermes_uid)"
     chown -R hermes:hermes \
-        "$INSTALL_DIR/.venv" \
+        "$INSTALL_DIR/venv" \
         "$INSTALL_DIR/ui-tui" \
         "$INSTALL_DIR/gateway" \
         "$INSTALL_DIR/node_modules" \
@@ -353,7 +353,7 @@ fi
 # after first-boot seeding and before supervised gateway services start.
 # Set HERMES_SKIP_CONFIG_MIGRATION=1 for controlled/manual migrations.
 if [ -f "$HERMES_HOME/config.yaml" ]; then
-    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/scripts/docker_config_migrate.py" \
+    s6-setuidgid hermes "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/scripts/docker_config_migrate.py" \
         || echo "[stage2] Warning: docker_config_migrate.py failed; continuing"
 fi
 
@@ -403,9 +403,9 @@ fi
 # wrapper to source the activate script. This is safe because
 # skills_sync.py doesn't depend on any environment exports beyond what
 # the python binary's own bin-stub already sets up (sys.path is rooted
-# at the venv's site-packages by virtue of running .venv/bin/python).
+# at the venv's site-packages by virtue of running venv/bin/python).
 if [ -d "$INSTALL_DIR/skills" ]; then
-    as_hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" \
+    as_hermes "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" \
         || echo "[stage2] Warning: skills_sync.py failed; continuing"
 fi
 

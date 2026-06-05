@@ -7,7 +7,7 @@ name: Docker / shell lint
 #
 # Rules and ignores are documented in .hadolint.yaml at the repo root.
 # shellcheck severity is pinned to `error` so SC1091-style "can't follow
-# sourced script" info-level warnings don't fail the job — the .venv
+# sourced script" info-level warnings don't fail the job — the venv
 # activate script doesn't exist at lint time.
 
 on:

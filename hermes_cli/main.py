@@ -10608,7 +10608,6 @@ def _cmd_update_post_pull(args, gateway_mode: bool):
             print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
 
     print()
-    print("✓ Code updated!")
 
     # After git pull, source files on disk are newer than cached Python
     # modules in this process.  Reload hermes_constants so that any lazy
