@@ -240,8 +240,18 @@ def cmd_dashboard_register(args) -> None:
 
     # Portal override: explicit --portal-url flag wins, else the
     # HERMES_DASHBOARD_PORTAL_URL env var, else the stored login's portal.
+    #
+    # We track whether a custom URL was *explicitly supplied* (flag or env)
+    # separately from the resolved value. An explicit custom URL is an
+    # intentional choice the user wants to persist (and update in place if it
+    # already exists in .env); a portal merely inferred from the stored login
+    # keeps the older, more conservative write-only-if-absent behaviour so we
+    # don't clutter .env for the common production case.
     portal_override = getattr(args, "portal_url", None) or os.environ.get(
         "HERMES_DASHBOARD_PORTAL_URL"
+    )
+    custom_portal_supplied = bool(
+        isinstance(portal_override, str) and portal_override.strip()
     )
     portal_base_url = _resolve_portal_base_url(portal_override)
 
@@ -265,10 +275,7 @@ def cmd_dashboard_register(args) -> None:
 
     print(f'✓ Registered dashboard "{registered_name}"')
 
-    # 3. Write env vars idempotently. Always set the client_id. Only set the
-    #    portal URL when it isn't already configured (env or config) AND differs
-    #    from the production default, so we don't clutter .env for the common case
-    #    but DO persist a non-default portal (e.g. a preview deploy used in dev).
+    # 3. Write env vars idempotently. Always set the client_id.
     try:
         save_env_value("HERMES_DASHBOARD_OAUTH_CLIENT_ID", client_id)
     except Exception as exc:
@@ -276,6 +283,18 @@ def cmd_dashboard_register(args) -> None:
         print(f"  Set it manually:  HERMES_DASHBOARD_OAUTH_CLIENT_ID={client_id}")
         sys.exit(1)
 
+    # Persist the portal URL. Two cases:
+    #   a) The user explicitly supplied a custom portal (--portal-url flag or
+    #      HERMES_DASHBOARD_PORTAL_URL env). That's an intentional choice we
+    #      always persist so it survives across sessions — overwriting any
+    #      existing entry in place (save_env_value updates a matching key
+    #      rather than appending a duplicate). This is true even when it equals
+    #      the production default: the user asked for it explicitly.
+    #   b) No custom portal was supplied. Keep the older conservative behaviour:
+    #      only write a portal inferred from the stored login when it isn't
+    #      already configured AND differs from the production default, so we
+    #      don't clutter .env for the common production case and don't alter an
+    #      existing entry unexpectedly.
     wrote_portal_url = False
     default_portal = "https://portal.nousresearch.com"
     existing_portal = None
@@ -283,7 +302,15 @@ def cmd_dashboard_register(args) -> None:
         existing_portal = get_env_value("HERMES_DASHBOARD_PORTAL_URL")
     except Exception:
         existing_portal = None
-    if not existing_portal and portal_base_url.rstrip("/") != default_portal:
+
+    if custom_portal_supplied:
+        should_write_portal = existing_portal != portal_base_url
+    else:
+        should_write_portal = (
+            not existing_portal and portal_base_url.rstrip("/") != default_portal
+        )
+
+    if should_write_portal:
         try:
             save_env_value("HERMES_DASHBOARD_PORTAL_URL", portal_base_url)
             wrote_portal_url = True

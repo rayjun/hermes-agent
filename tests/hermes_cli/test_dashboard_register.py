@@ -27,7 +27,7 @@ import hermes_cli.dashboard_register as dr
 
 
 def _ns(**kw):
-    defaults = dict(name=None, redirect_uri=None)
+    defaults = dict(name=None, redirect_uri=None, portal_url=None)
     defaults.update(kw)
     return argparse.Namespace(**defaults)
 
@@ -155,6 +155,123 @@ class TestHappyPath:
             saved["HERMES_DASHBOARD_PORTAL_URL"]
             == "https://nous-account-service-git-feat-x.vercel.app"
         )
+
+
+class TestCustomPortalPersistence:
+    """`--portal-url` / HERMES_DASHBOARD_PORTAL_URL is persisted to .env.
+
+    An *explicitly supplied* custom portal URL is an intentional choice the
+    user wants to survive across sessions, so it's always written (updating an
+    existing entry in place rather than appending a duplicate). When no custom
+    URL is supplied, the older conservative behaviour is preserved: an inferred
+    portal is only written when absent and non-default, and an existing entry
+    is never altered unexpectedly.
+    """
+
+    def _run(self, *, args, portal, existing_portal):
+        """Drive cmd_dashboard_register, capturing save_env_value calls.
+
+        `existing_portal` is what get_env_value returns for
+        HERMES_DASHBOARD_PORTAL_URL (None = not present in .env).
+        """
+        response = {
+            "client_id": "agent:selfhost-1",
+            "id": "selfhost-1",
+            "name": "dreamy_tesla",
+            "kind": "SELF_HOSTED",
+            "custom_redirect_uri": None,
+            "created_at": "2026-06-04T12:00:00.000Z",
+        }
+
+        saved: dict = {}
+
+        def fake_save(key, value):
+            saved[key] = value
+
+        def fake_get_env_value(key, *a, **kw):
+            if key == "HERMES_DASHBOARD_PORTAL_URL":
+                return existing_portal
+            return None
+
+        with patch(
+            "hermes_cli.auth.resolve_nous_access_token", return_value="tok"
+        ), patch("hermes_cli.config.is_managed", return_value=False), patch.dict(
+            dr.os.environ, {}, clear=False
+        ), patch.object(
+            dr, "_resolve_portal_base_url", return_value=portal
+        ), patch(
+            "hermes_cli.config.get_env_value", side_effect=fake_get_env_value
+        ), patch(
+            "hermes_cli.config.save_env_value", side_effect=fake_save
+        ), patch.object(
+            dr.urllib.request, "urlopen", return_value=_fake_http_ok(response)
+        ):
+            # The ambient process env may carry HERMES_DASHBOARD_PORTAL_URL
+            # (e.g. staging dev shells); drop it so `custom_portal_supplied`
+            # is driven solely by the args.portal_url under test.
+            dr.os.environ.pop("HERMES_DASHBOARD_PORTAL_URL", None)
+            dr.cmd_dashboard_register(args)
+        return saved
+
+    def test_explicit_custom_url_persisted_when_var_absent(self, capsys):
+        saved = self._run(
+            args=_ns(portal_url="https://preview.example.com"),
+            portal="https://preview.example.com",
+            existing_portal=None,
+        )
+        assert saved["HERMES_DASHBOARD_PORTAL_URL"] == "https://preview.example.com"
+
+    def test_explicit_custom_url_updates_existing_in_place(self, capsys):
+        # An entry already exists with a different value; the explicit custom
+        # URL overwrites it (save_env_value updates the matching key in place).
+        saved = self._run(
+            args=_ns(portal_url="https://new-preview.example.com"),
+            portal="https://new-preview.example.com",
+            existing_portal="https://old-preview.example.com",
+        )
+        assert (
+            saved["HERMES_DASHBOARD_PORTAL_URL"] == "https://new-preview.example.com"
+        )
+
+    def test_explicit_custom_url_persisted_even_when_equals_default(self, capsys):
+        # User explicitly asked for the production portal — honour the explicit
+        # request and persist it (the no-flag path would skip the default).
+        saved = self._run(
+            args=_ns(portal_url="https://portal.nousresearch.com"),
+            portal="https://portal.nousresearch.com",
+            existing_portal=None,
+        )
+        assert (
+            saved["HERMES_DASHBOARD_PORTAL_URL"] == "https://portal.nousresearch.com"
+        )
+
+    def test_explicit_custom_url_equal_to_existing_is_noop(self, capsys):
+        # Already persisted with the same value → no redundant write.
+        saved = self._run(
+            args=_ns(portal_url="https://preview.example.com"),
+            portal="https://preview.example.com",
+            existing_portal="https://preview.example.com",
+        )
+        assert "HERMES_DASHBOARD_PORTAL_URL" not in saved
+
+    def test_no_flag_default_portal_not_written(self, capsys):
+        # No custom URL supplied, resolves to default → not written.
+        saved = self._run(
+            args=_ns(),
+            portal="https://portal.nousresearch.com",
+            existing_portal=None,
+        )
+        assert "HERMES_DASHBOARD_PORTAL_URL" not in saved
+
+    def test_no_flag_does_not_overwrite_existing_entry(self, capsys):
+        # No custom URL supplied and the var already exists → left untouched,
+        # even if the inferred portal differs (acceptance criterion 4).
+        saved = self._run(
+            args=_ns(),
+            portal="https://inferred-from-login.example.com",
+            existing_portal="https://already-set.example.com",
+        )
+        assert "HERMES_DASHBOARD_PORTAL_URL" not in saved
 
 
 class TestPortalResolution:
