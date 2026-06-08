@@ -7,7 +7,9 @@ import {
   filterDesktopCommandsCatalog,
   isDesktopSlashCommand,
   isDesktopSlashSuggestion,
-  isModelPickerCommand
+  isModelPickerCommand,
+  isPickerCommand,
+  resolveDesktopCommand
 } from './desktop-slash-commands'
 
 describe('desktop slash command curation', () => {
@@ -152,5 +154,27 @@ describe('desktop slash command curation', () => {
     expect(isModelPickerCommand('/model sonnet')).toBe(true)
     expect(isModelPickerCommand('/new')).toBe(false)
     expect(isModelPickerCommand('/skills')).toBe(false)
+  })
+
+  it('gives /resume (and its aliases) a first-class session picker surface', () => {
+    expect(isPickerCommand('/resume', 'session')).toBe(true)
+    expect(isPickerCommand('/sessions', 'session')).toBe(true)
+    expect(isPickerCommand('/switch', 'session')).toBe(true)
+    // Unlike /model, /resume shows in the popover; its aliases stay hidden.
+    expect(isDesktopSlashSuggestion('/resume')).toBe(true)
+    expect(isDesktopSlashSuggestion('/sessions')).toBe(false)
+    expect(isDesktopSlashCommand('/switch')).toBe(true)
+    // The session picker is distinct from the model picker.
+    expect(isModelPickerCommand('/resume')).toBe(false)
+  })
+
+  it('resolves commands and aliases to their declared surface', () => {
+    expect(resolveDesktopCommand('/new')?.surface).toEqual({ kind: 'action', action: 'new' })
+    expect(resolveDesktopCommand('/reset')?.surface).toEqual({ kind: 'action', action: 'new' })
+    expect(resolveDesktopCommand('/resume')?.surface).toEqual({ kind: 'picker', picker: 'session' })
+    expect(resolveDesktopCommand('/usage')?.surface).toEqual({ kind: 'exec' })
+    expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })
+    // Skill / quick commands aren't in the registry.
+    expect(resolveDesktopCommand('/gif-search')).toBeNull()
   })
 })

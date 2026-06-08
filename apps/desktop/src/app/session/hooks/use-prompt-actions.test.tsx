@@ -71,6 +71,7 @@ function Harness({
     handleSkinCommand: () => '',
     refreshSessions,
     requestGateway,
+    resumeStoredSession: () => undefined,
     selectedStoredSessionIdRef,
     startFreshSessionDraft: () => undefined,
     sttEnabled: false,

@@ -1624,6 +1624,44 @@ class SlashCommandCompleter(Completer):
             return
 
     @staticmethod
+    def _handoff_completions(sub_text: str, sub_lower: str):
+        """Yield platform completions for /handoff.
+
+        Offers connected (enabled + configured) gateway platforms. A recorded
+        home channel is NOT required to list a platform — it's often learned at
+        runtime — so the meta hints whether one is set yet. Completes only the
+        first arg (the platform); once one is chosen, stop.
+        """
+        parts = sub_text.split()
+        trailing_space = sub_text.endswith(" ")
+        if len(parts) > 1 or (len(parts) == 1 and trailing_space):
+            return
+        partial = "" if (not parts or trailing_space) else parts[-1]
+        partial_lower = partial.lower()
+        try:
+            from gateway.config import load_gateway_config
+
+            gw = load_gateway_config()
+            platforms = gw.get_connected_platforms()
+        except Exception:
+            return
+        for platform in platforms:
+            name = platform.value
+            if not name.startswith(partial_lower):
+                continue
+            try:
+                home = gw.get_home_channel(platform)
+            except Exception:
+                home = None
+            meta = f"→ {home.name}" if home and getattr(home, "name", None) else "send this session here"
+            yield Completion(
+                name,
+                start_position=-len(partial),
+                display=name,
+                display_meta=meta,
+            )
+
+    @staticmethod
     def _personality_completions(sub_text: str, sub_lower: str):
         """Yield completions for /personality from configured personalities."""
         try:
@@ -1686,6 +1724,10 @@ class SlashCommandCompleter(Completer):
             # SUBCOMMANDS branch below.
             if base_cmd == "/tools":
                 yield from self._tools_completions(sub_text, sub_lower)
+                return
+
+            if base_cmd == "/handoff":
+                yield from self._handoff_completions(sub_text, sub_lower)
                 return
 
             # Static subcommand completions

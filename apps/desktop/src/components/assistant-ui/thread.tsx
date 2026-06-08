@@ -916,22 +916,42 @@ const SystemMessage: FC = () => {
   const slashStatus = text.match(SLASH_STATUS_RE)
 
   if (slashStatus?.groups) {
+    const output = slashStatus.groups.output.trim()
+    // Single-line status (e.g. "model → x") reads best centered inline; padded
+    // multiline output (catalogs, usage tables) needs left-aligned, wider room
+    // or the column alignment breaks.
+    const multiline = output.includes('\n')
+
     return (
       <MessagePrimitive.Root
-        className="max-w-[min(86%,44rem)] self-center px-2 py-0.5 text-center text-[0.6875rem] leading-5 text-muted-foreground/60"
+        className={cn(
+          'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60',
+          multiline ? 'text-left' : 'text-center'
+        )}
         data-role="system"
         data-slot="aui_system-message-root"
       >
         <span className="font-mono text-muted-foreground/55">{slashStatus.groups.command}</span>
-        <span className="mx-1.5 text-muted-foreground/35">·</span>
-        <span className="whitespace-pre-wrap">{slashStatus.groups.output.trim()}</span>
+        {multiline ? (
+          <span className="mt-0.5 block whitespace-pre-wrap">{output}</span>
+        ) : (
+          <>
+            <span className="mx-1.5 text-muted-foreground/35">·</span>
+            <span className="whitespace-pre-wrap">{output}</span>
+          </>
+        )}
       </MessagePrimitive.Root>
     )
   }
 
+  const multiline = text.includes('\n')
+
   return (
     <MessagePrimitive.Root
-      className="max-w-[min(86%,44rem)] self-center px-2 py-0.5 text-center text-[0.6875rem] leading-5 text-muted-foreground/55"
+      className={cn(
+        'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/55',
+        multiline ? 'text-left' : 'text-center'
+      )}
       data-role="system"
       data-slot="aui_system-message-root"
     >
