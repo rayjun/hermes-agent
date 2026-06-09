@@ -304,6 +304,29 @@ def _web_requires_env() -> list[str]:
 
 DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION = 5000
 
+def _load_web_extract_config() -> Dict[str, Any]:
+    """Return the ``web`` section of config.yaml (empty dict if missing)."""
+    try:
+        from hermes_cli.config import load_config
+        return (load_config() or {}).get("web", {}) or {}
+    except Exception:
+        return {}
+
+
+def _web_extract_max_output_chars() -> int:
+    return int(_load_web_extract_config().get("extract_summary_max_chars", 5000))
+
+
+def _web_extract_max_tokens() -> int:
+    return int(_load_web_extract_config().get("extract_summary_max_tokens", 20000))
+
+
+def _web_extract_llm_summarization() -> bool:
+    cfg = _load_web_extract_config()
+    if "extract_llm_summarization" not in cfg:
+        return True  # default: enabled
+    return bool(cfg["extract_llm_summarization"])
+
 def _is_nous_auxiliary_client(client: Any) -> bool:
     """Return True when the resolved auxiliary backend is Nous Portal."""
     from urllib.parse import urlparse
@@ -367,7 +390,8 @@ async def process_content_with_llm(
     MAX_CONTENT_SIZE = 2_000_000  # 2M chars - refuse entirely above this
     CHUNK_THRESHOLD = 500_000     # 500k chars - use chunked processing above this
     CHUNK_SIZE = 100_000          # 100k chars per chunk
-    MAX_OUTPUT_SIZE = 5000        # Hard cap on final output size
+    MAX_OUTPUT_SIZE = _web_extract_max_output_chars()
+    MAX_SUMMARIZER_TOKENS = _web_extract_max_tokens()
     
     try:
         content_len = len(content)
@@ -401,13 +425,13 @@ async def process_content_with_llm(
         # Standard single-pass processing for normal content
         logger.info("Processing content with LLM (%d characters)", content_len)
         
-        processed_content = await _call_summarizer_llm(content, context_str, model)
-        
+        processed_content = await _call_summarizer_llm(content, context_str, model, MAX_SUMMARIZER_TOKENS, MAX_OUTPUT_SIZE)
+
         if processed_content:
             # Enforce output cap
             if len(processed_content) > MAX_OUTPUT_SIZE:
                 processed_content = processed_content[:MAX_OUTPUT_SIZE] + "\n\n[... summary truncated for context management ...]"
-            
+
             # Log compression metrics
             processed_length = len(processed_content)
             compression_ratio = processed_length / content_len if content_len > 0 else 1.0
@@ -441,6 +465,7 @@ async def _call_summarizer_llm(
     context_str: str, 
     model: Optional[str], 
     max_tokens: int = 20000,
+    max_output_chars: int = 5000,
     is_chunk: bool = False,
     chunk_info: str = ""
 ) -> Optional[str]:
@@ -452,6 +477,7 @@ async def _call_summarizer_llm(
         context_str: Context information (title, URL)
         model: Model to use
         max_tokens: Maximum output tokens
+        max_output_chars: Target maximum characters for the summary (injected into the prompt)
         is_chunk: Whether this is a chunk of a larger document
         chunk_info: Information about chunk position (e.g., "Chunk 2/5")
         
@@ -481,15 +507,18 @@ SECTION CONTENT:
 Extract all important information from this section in a structured format. Focus on facts, data, insights, and key details. Do not add introductions or conclusions."""
 
     else:
-        # Standard full-document prompt
-        system_prompt = """You are an expert content analyst. Your job is to process web content and create a comprehensive yet concise summary that preserves all important information while dramatically reducing bulk.
+        # Standard full-document prompt — includes target length so the model
+        # produces a summary that fits without truncation.
+        system_prompt = f"""You are an expert content analyst. Your job is to process web content and create a comprehensive yet concise summary that preserves all important information while dramatically reducing bulk.
 
 Create a well-structured markdown summary that includes:
 1. Key excerpts (quotes, code snippets, important facts) in their original format
 2. Comprehensive summary of all other important information
 3. Proper markdown formatting with headers, bullets, and emphasis
 
-Your goal is to preserve ALL important information while reducing length. Never lose key facts, figures, insights, or actionable information. Make it scannable and well-organized."""
+Your goal is to preserve ALL important information while reducing length. Never lose key facts, figures, insights, or actionable information. Make it scannable and well-organized.
+
+IMPORTANT: Keep the summary concise — ensure the summary is no more than {max_output_chars} characters of well-structured markdown. Do not exceed this limit."""
 
         user_prompt = f"""Please process this web content and create a comprehensive markdown summary:
 
@@ -891,7 +920,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 async def web_extract_tool(
     urls: List[str],
     format: str = None,
-    use_llm_processing: bool = True,
+    use_llm_processing: bool = True,  # default True; override with web.extract_llm_summarization in config.yaml
     model: Optional[str] = None,
     min_length: int = DEFAULT_MIN_LENGTH_FOR_SUMMARIZATION
 ) -> str:
@@ -917,6 +946,11 @@ async def web_extract_tool(
     Raises:
         Exception: If extraction fails or API key is not set
     """
+    # When the caller (agent) doesn't explicitly set use_llm_processing,
+    # respect the config.yaml toggle (default: True).
+    if use_llm_processing:
+        use_llm_processing = _web_extract_llm_summarization()
+
     # Block URLs containing embedded secrets (exfiltration prevention).
     # URL-decode first so percent-encoded secrets (%73k- = sk-) are caught.
     from agent.redact import _PREFIX_RE
