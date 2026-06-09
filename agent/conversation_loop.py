@@ -65,20 +65,8 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
-# ── Post-tool placeholder patterns ──────────────────────────────────
-# Models sometimes return short progress/status text ("Working on it…")
-# after tool results instead of a substantive answer.
-#
-# Two categories:
-#   1) Exact-match (single-word)  – "analyzing", "thinking", etc.
-#      Only fire when the whole trimmed response (casefolded) equals
-#      the pattern after normalising trailing punctuation.  This avoids
-#      false positives on legitimate short answers like "Analyzing:
-#      3 files changed."
-#   2) Prefix-match (multi-word)  – "i'll", "let me", "one moment", etc.
-#      Fire when the response *starts with* the pattern, because the
-#      pattern itself already expresses intent ("let me check…" is
-#      always a placeholder, regardless of what follows).
+# Post-tool placeholder detection: exact-match (single-word) and
+# prefix-match (intent phrases).  Capped at MAX_RETRIES to prevent loops.
 _POST_TOOL_PLACEHOLDER_EXACT = [
     "analyzing", "checking", "continuing", "digging", "examining",
     "exploring", "fetching", "gathering", "generating", "getting",
@@ -86,17 +74,9 @@ _POST_TOOL_PLACEHOLDER_EXACT = [
     "researching", "reviewing", "running", "scanning", "searching",
     "starting", "thinking", "waiting", "working",
 ]
-
 _POST_TOOL_PLACEHOLDER_PREFIX = [
-    "i'll", "let me", "one moment", "one sec", "please wait",
-    "stand by",
+    "i'll", "let me", "one moment", "one sec", "please wait", "stand by",
 ]
-
-# Cap on consecutive placeholder recoveries per conversation turn,
-# shared with the existing empty-response retry guard (see the
-# _post_tool_empty_retried flag on the agent).  After this many
-# nudge cycles the agent breaks out of the loop to avoid an
-# infinite token-burn spiral.
 _POST_TOOL_PLACEHOLDER_MAX_RETRIES = 2
 
 # Stable prefix of the local interrupt status string emitted when a turn is
@@ -3841,15 +3821,9 @@ def run_conversation(
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
 
-                # ── Post-tool placeholder guard ──────────────────
-                # Models sometimes return short progress/status text
-                # ("Working on it…", "Writing...", etc.) after tool
-                # results instead of a substantive answer.  Treat these
-                # as incomplete and nudge the model to continue.
-                #
-                # Safety: capped at _POST_TOOL_PLACEHOLDER_MAX_RETRIES
-                # consecutive recoveries to prevent infinite loops when
-                # the model persistently returns placeholders.
+                # Post-tool placeholder guard: models sometimes return short
+                # progress text after tool results instead of a real answer.
+                # Nudge them to continue; capped to prevent infinite loops.
                 if final_response.strip():
                     _recent_tool = any(
                         m.get("role") == "tool"
@@ -3857,65 +3831,52 @@ def run_conversation(
                     )
                     if _recent_tool:
                         _lower = final_response.strip().lower()
-                        # Normalise trailing punctuation so that
-                        # "Looking..." and "looking…" both match.
-                        _lower_stripped = _lower.rstrip(" .…")
-
-                        _is_placeholder = (
+                        _stripped = _lower.rstrip(" .…")
+                        if (
                             len(_lower) < 40
                             and (
-                                _lower_stripped in _POST_TOOL_PLACEHOLDER_EXACT
+                                _stripped in _POST_TOOL_PLACEHOLDER_EXACT
                                 or any(
                                     _lower.startswith(p)
                                     for p in _POST_TOOL_PLACEHOLDER_PREFIX
                                 )
                             )
-                        )
-                        if _is_placeholder:
-                            _retry_count = getattr(
+                        ):
+                            _retries = getattr(
                                 agent, "_post_tool_placeholder_retries", 0
                             )
-                            if _retry_count >= _POST_TOOL_PLACEHOLDER_MAX_RETRIES:
+                            if _retries >= _POST_TOOL_PLACEHOLDER_MAX_RETRIES:
                                 logger.warning(
-                                    "Post-tool placeholder retry cap (%d) reached "
+                                    "post-tool placeholder retry cap reached "
                                     "(%r) — treating as final response",
-                                    _POST_TOOL_PLACEHOLDER_MAX_RETRIES,
                                     final_response.strip(),
                                 )
-                                # Fall through — treat as final response
                             else:
-                                agent._post_tool_placeholder_retries = (
-                                    _retry_count + 1
-                                )
+                                agent._post_tool_placeholder_retries = _retries + 1
                                 logger.info(
-                                    "Post-tool placeholder detected (%r, "
-                                    "retry %d/%d) — nudging model to continue",
+                                    "post-tool placeholder detected (%r, "
+                                    "retry %d/%d)",
                                     final_response.strip(),
-                                    _retry_count + 1,
+                                    _retries + 1,
                                     _POST_TOOL_PLACEHOLDER_MAX_RETRIES,
                                 )
                                 agent._buffer_status(
-                                    "Model returned placeholder after tools — "
-                                    "nudging to continue"
+                                    "placeholder after tools — nudging to continue"
                                 )
-                                _nudge = agent._build_assistant_message(
-                                    assistant_message, finish_reason
+                                messages.append(
+                                    agent._build_assistant_message(
+                                        assistant_message, finish_reason
+                                    )
                                 )
-                                messages.append(_nudge)
                                 messages.append({
                                     "role": "user",
                                     "content": (
-                                        "You just executed tool calls and "
-                                        "responded briefly. Please review the "
-                                        "tool results above and continue with "
-                                        "the task. Provide the actual results "
-                                        "or next steps."
+                                        "Tool results are above. "
+                                        "Please continue with the actual "
+                                        "results or next steps."
                                     ),
                                     "_placeholder_recovery_synthetic": True,
                                 })
-                                # Reset the retry counter on successful
-                                # (non-placeholder) response so the next
-                                # turn starts fresh.
                                 continue
                 
                 # Fix: unmute output when entering the no-tool-call branch
