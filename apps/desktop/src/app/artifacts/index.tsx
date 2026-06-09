@@ -309,8 +309,12 @@ export function collectArtifactsForSession(session: SessionInfo, messages: Sessi
   return Array.from(found.values())
 }
 
+// Normalize epoch seconds → milliseconds.
+// SessionDB stores timestamps as REAL epoch seconds, but the Date constructor
+// expects milliseconds. Date.now() (the last fallback) is already in ms.
 function formatArtifactTime(timestamp: number): string {
-  return ARTIFACT_TIME_FMT.format(new Date(timestamp))
+  const ms = timestamp < 1e12 ? timestamp * 1000 : timestamp
+  return ARTIFACT_TIME_FMT.format(new Date(ms))
 }
 
 function pageRangeLabel(total: number, page: number, pageSize: number, a: Translations['artifacts']): string {
