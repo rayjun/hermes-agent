@@ -13,13 +13,14 @@ import {
   useState
 } from 'react'
 
-import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
+import { hermesDirectiveFormatter, type SlashChipKind } from '@/components/assistant-ui/directive-text'
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
+import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
@@ -40,10 +41,11 @@ import {
   shouldAutoDrainOnSettle,
   updateQueuedPrompt
 } from '@/store/composer-queue'
-import { $gatewayState, $messages } from '@/store/session'
+import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
+import { useTheme } from '@/themes'
 
-import { extractDroppedFiles, HERMES_PATHS_MIME } from '../hooks/use-composer-actions'
+import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '../hooks/use-composer-actions'
 
 import { AttachmentList } from './attachments'
 import { ContextMenu } from './context-menu'
@@ -64,7 +66,7 @@ import { useVoiceConversation } from './hooks/use-voice-conversation'
 import { useVoiceRecorder } from './hooks/use-voice-recorder'
 import {
   dragHasAttachments,
-  droppedFileInlineRef,
+  droppedFileInlineRefs,
   type InlineRefInput,
   insertInlineRefsIntoEditor
 } from './inline-refs'
@@ -74,9 +76,9 @@ import {
   placeCaretEnd,
   refChipElement,
   renderComposerContents,
-  RICH_INPUT_SLOT
+  RICH_INPUT_SLOT,
+  slashChipElement
 } from './rich-editor'
-import { SkinSlashPopover } from './skin-slash-popover'
 import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
@@ -94,6 +96,30 @@ const COMPOSER_FADE_BACKGROUND =
   'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
 
 const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
+
+/** Completion items can carry an `action` (set in use-slash-completions) that
+ *  runs a side effect on pick instead of inserting a chip — e.g. the session
+ *  picker's "Browse all…" entry opens the overlay. Table-driven so new action
+ *  items are a registry row, not a composer branch. */
+const COMPLETION_ACTIONS: Record<string, () => void> = {
+  'session-picker': () => setSessionPickerOpen(true)
+}
+
+/** Map a picked `/` completion to its pill accent. Driven by the completion
+ *  group set in use-slash-completions (Skills / Themes / Commands|Options). */
+function slashChipKindForItem(item: Unstable_TriggerItem): SlashChipKind {
+  const group = (item.metadata as { group?: unknown } | undefined)?.group
+
+  if (group === 'Skills') {
+    return 'skill'
+  }
+
+  if (group === 'Themes') {
+    return 'theme'
+  }
+
+  return 'command'
+}
 
 interface QueueEditState {
   attachments: ComposerAttachment[]
@@ -162,8 +188,9 @@ export function ChatBar({
 
   const narrow = useMediaQuery('(max-width: 30rem)')
 
+  const { availableThemes, themeName } = useTheme()
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
-  const slash = useSlashCompletions({ gateway: gateway ?? null })
+  const slash = useSlashCompletions({ activeSkin: themeName, gateway: gateway ?? null, skinThemes: availableThemes })
 
   const stacked = expanded || narrow || tight
   const trimmedDraft = draft.trim()
@@ -171,10 +198,12 @@ export function ChatBar({
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
+
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
   const canSteer =
     busy && !!onSteer && attachments.length === 0 && trimmedDraft.length > 0 && !SLASH_COMMAND_RE.test(trimmedDraft)
+
   const showHelpHint = draft === '?'
 
   const { t } = useI18n()
@@ -462,12 +491,6 @@ export function ChatBar({
     })
   }, [])
 
-  const selectSkinSlashCommand = (command: string) => {
-    draftRef.current = command
-    aui.composer().setText(command)
-    requestMainFocus()
-  }
-
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
 
@@ -620,16 +643,50 @@ export function ChatBar({
       return
     }
 
+    // Action items (e.g. "Browse all sessions…") run a side effect instead of
+    // inserting a chip: strip the typed trigger token, then fire the action.
+    const completionAction = (item.metadata as { action?: unknown } | undefined)?.action
+    const runAction = typeof completionAction === 'string' ? COMPLETION_ACTIONS[completionAction] : undefined
+
+    if (runAction) {
+      const current = composerPlainText(editor)
+      const prefix = current.slice(0, Math.max(0, current.length - trigger.tokenLength))
+
+      renderComposerContents(editor, prefix)
+      placeCaretEnd(editor)
+      draftRef.current = composerPlainText(editor)
+      aui.composer().setText(draftRef.current)
+      closeTrigger()
+      runAction()
+      requestMainFocus()
+
+      return
+    }
+
     const serialized = hermesDirectiveFormatter.serialize(item)
     const starter = serialized.endsWith(':')
+
+    // Picking a bare arg-taking command (e.g. `/personality`) shouldn't commit
+    // it — expand to its options step so the popover shows the inline list, just
+    // as typing `/personality ` by hand would. A serialized value with a space is
+    // already an arg pick (`/personality alice`), so it commits normally.
+    const command = (item.metadata as { command?: string } | undefined)?.command ?? ''
+
+    const expandsToArgs =
+      trigger.kind === '/' && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
+
     const text = starter || serialized.endsWith(' ') ? serialized : `${serialized} `
     const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)
+    // No pill while expanding — the bare command stays plain text until an arg
+    // is picked, at which point a single pill is emitted for the full command.
+    const slashKind = !expandsToArgs && trigger.kind === '/' ? slashChipKindForItem(item) : null
+    const keepTriggerOpen = starter || expandsToArgs
 
     const finish = () => {
       draftRef.current = composerPlainText(editor)
       aui.composer().setText(draftRef.current)
       requestMainFocus()
-      starter ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
+      keepTriggerOpen ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
     }
 
     const sel = window.getSelection()
@@ -639,7 +696,20 @@ export function ChatBar({
 
     if (!sel || !range || node?.nodeType !== Node.TEXT_NODE || offset < trigger.tokenLength) {
       const current = composerPlainText(editor)
-      renderComposerContents(editor, `${current.slice(0, Math.max(0, current.length - trigger.tokenLength))}${text}`)
+      const prefix = current.slice(0, Math.max(0, current.length - trigger.tokenLength))
+
+      if (slashKind) {
+        // Two-step arg picks (e.g. `/handoff` pill already inserted, now picking
+        // the platform) land here because the caret sits past a contenteditable
+        // chip. Rebuild the prefix and re-emit a single pill for the full command.
+        renderComposerContents(editor, prefix)
+        editor.append(slashChipElement(serialized, slashKind), document.createTextNode(' '))
+        placeCaretEnd(editor)
+
+        return finish()
+      }
+
+      renderComposerContents(editor, `${prefix}${text}`)
       placeCaretEnd(editor)
 
       return finish()
@@ -650,8 +720,13 @@ export function ChatBar({
     replaceRange.setEnd(node, offset)
     replaceRange.deleteContents()
 
-    if (directive) {
-      const chip = refChipElement(directive[1], directive[2])
+    const chip = slashKind
+      ? slashChipElement(serialized, slashKind)
+      : directive
+        ? refChipElement(directive[1], directive[2])
+        : null
+
+    if (chip) {
       const space = document.createTextNode(' ')
       const fragment = document.createDocumentFragment()
       fragment.append(chip, space)
@@ -814,7 +889,16 @@ export function ChatBar({
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
 
-      if (!busy && !hasComposerPayload && queuedPrompts.length > 0) {
+      // Decide from the DOM, not React state. `hasComposerPayload` is derived
+      // from the AUI composer state, which lags the latest keystroke by a
+      // render, so on fast typing / IME the just-typed text isn't in state yet.
+      // Without the live read, a real message typed while prompts are queued
+      // would drain the queue instead of sending. submitDraft() re-syncs and
+      // sends the live editor text.
+      const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
+      const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
+
+      if (!busy && !hasLivePayload && queuedPrompts.length > 0) {
         void drainNextQueued()
 
         return
@@ -822,7 +906,10 @@ export function ChatBar({
 
       // Empty Enter while busy is a no-op — interrupting is explicit (Stop/Esc),
       // never a stray Enter after sending. With a payload, submitDraft queues it.
-      if (busy && !hasComposerPayload) {
+      // Gate on the live DOM payload (not the render-lagged composer state) so a
+      // message typed fast / via IME while busy still reaches submitDraft() and
+      // gets queued instead of being mistaken for an empty Enter.
+      if (busy && !hasLivePayload) {
         return
       }
 
@@ -919,24 +1006,25 @@ export function ChatBar({
       return
     }
 
-    if (Array.from(event.dataTransfer.types || []).includes(HERMES_PATHS_MIME)) {
-      const refs = candidates
-        .map(candidate => droppedFileInlineRef(candidate, cwd))
-        .filter((ref): ref is string => Boolean(ref))
+    // In-app drags (project tree / gutter) are workspace-relative paths the
+    // gateway resolves directly, so they stay inline @file:/@line: refs. OS
+    // drops are absolute local paths a remote gateway can't read (and images
+    // need byte upload for vision), so route them through the upload pipeline.
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+    const refs = droppedFileInlineRefs(inAppRefs, cwd)
 
-      if (insertInlineRefs(refs)) {
-        triggerHaptic('selection')
-      }
-
-      return
+    if (refs.length && insertInlineRefs(refs)) {
+      triggerHaptic('selection')
     }
 
-    void Promise.resolve(onAttachDroppedItems(candidates)).then(attached => {
-      if (attached) {
-        triggerHaptic('selection')
-        requestMainFocus()
-      }
-    })
+    if (osDrops.length) {
+      void Promise.resolve(onAttachDroppedItems(osDrops)).then(attached => {
+        if (attached) {
+          triggerHaptic('selection')
+          requestMainFocus()
+        }
+      })
+    }
   }
 
   const handleInputDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
@@ -956,11 +1044,7 @@ export function ChatBar({
 
     const candidates = extractDroppedFiles(event.dataTransfer)
 
-    const refs = candidates
-      .map(candidate => droppedFileInlineRef(candidate, cwd))
-      .filter((ref): ref is string => Boolean(ref))
-
-    if (!refs.length) {
+    if (!candidates.length) {
       return
     }
 
@@ -968,8 +1052,26 @@ export function ChatBar({
     event.stopPropagation()
     resetDragState()
 
-    if (insertInlineRefs(refs)) {
+    // Dropping straight onto the text box used to inline-ref *every* file —
+    // including OS/Finder drops, whose absolute local path a remote gateway
+    // can't read and whose image bytes never reached vision. Split by origin:
+    // in-app drags stay inline refs; OS drops go through the upload pipeline.
+    // (When no upload handler is wired, fall back to inline refs for all.)
+    const attach = onAttachDroppedItems
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+    const refs = droppedFileInlineRefs(attach ? inAppRefs : candidates, cwd)
+
+    if (refs.length && insertInlineRefs(refs)) {
       triggerHaptic('selection')
+    }
+
+    if (attach && osDrops.length) {
+      void Promise.resolve(attach(osDrops)).then(attached => {
+        if (attached) {
+          triggerHaptic('selection')
+          requestMainFocus()
+        }
+      })
     }
   }
 
@@ -1212,6 +1314,26 @@ export function ChatBar({
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const submitDraft = () => {
+    // Source the text from the DOM editor, not React state. The AUI composer
+    // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
+    // render, so on fast typing or IME composition the final keystroke(s) may
+    // not have synced yet — reading state here drops the message (Enter looks
+    // like it does nothing; typing a trailing space only "fixes" it because the
+    // extra input event forces a state sync). draftRef is updated on every
+    // input event; refresh it from the editor once more to also cover an
+    // in-flight keystroke that hasn't fired its input event yet.
+    const editor = editorRef.current
+    if (editor) {
+      const domText = composerPlainText(editor)
+      if (domText !== draftRef.current) {
+        draftRef.current = domText
+        aui.composer().setText(domText)
+      }
+    }
+
+    const text = draftRef.current
+    const payloadPresent = text.trim().length > 0 || attachments.length > 0
+
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
@@ -1222,12 +1344,12 @@ export function ChatBar({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(draft.trim())) {
-        const submitted = draft
+      if (!attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
+        const submitted = text
         triggerHaptic('submit')
         clearDraft()
         void onSubmit(submitted)
-      } else if (hasComposerPayload) {
+      } else if (payloadPresent) {
         queueCurrentDraft()
       } else {
         // Stop button (the only way to reach here while busy with an empty
@@ -1235,10 +1357,10 @@ export function ChatBar({
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
       }
-    } else if (!hasComposerPayload && queuedPrompts.length > 0) {
+    } else if (!payloadPresent && queuedPrompts.length > 0) {
       void drainNextQueued()
-    } else if (draft.trim() || attachments.length > 0) {
-      const submitted = draft
+    } else if (payloadPresent) {
+      const submitted = text
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
@@ -1468,7 +1590,6 @@ export function ChatBar({
               onPick={replaceTriggerWithChip}
             />
           )}
-          <SkinSlashPopover draft={draft} onSelect={selectSkinSlashCommand} />
           {activeQueueSessionKey && queuedPrompts.length > 0 && (
             // Out of flow so the queue never inflates the composer's measured
             // height (that drives thread bottom padding → chat resizes on
