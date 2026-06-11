@@ -1,0 +1,7 @@
+name: web-anysearch
+version: 1.0.0
+description: "AnySearch web search via MCP (api.anysearch.com) — no API key required, works in mainland China."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - anysearch
