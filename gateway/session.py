@@ -1268,10 +1268,9 @@ class SessionStore:
         """Append a message to a session's transcript (SQLite).
 
         Args:
-            skip_db: When True, skip the SQLite write. Used when the agent
-                     already persisted messages to SQLite via its own
-                     _flush_messages_to_session_db(), preventing the
-                     duplicate-write bug (#860).
+            skip_db: When True, skip the SQLite write.  Deprecated — the
+                     gateway no longer uses this.  Kept for backward
+                     compatibility.
         """
         if self._db and not skip_db:
             try:
