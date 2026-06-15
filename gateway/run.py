@@ -8625,10 +8625,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     }
                 )
             
-            # The agent already persisted these messages to SQLite via
-            # _flush_messages_to_session_db(), so skip the DB write here
-            # to prevent the duplicate-write bug (#860 / #42039).
-            agent_persisted = self._session_db is not None
+            # The gateway persists transcript entries to state.db so that
+            # agent messages survive process restarts.  A last-message
+            # dedup in append_to_transcript() prevents the duplicate-row
+            # bug (#860) when the agent has already flushed the same
+            # message via _flush_messages_to_session_db().
 
             # Find only the NEW messages from this turn (skip history we loaded).
             # Use the filtered history length (history_offset) that was actually
@@ -8647,7 +8648,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self.session_store.append_to_transcript(
                     session_entry.session_id,
                     _user_entry,
-                    skip_db=agent_persisted,
                 )
             else:
                 history_len = agent_result.get("history_offset", len(history))
@@ -8661,13 +8661,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self.session_store.append_to_transcript(
                         session_entry.session_id,
                         _user_entry,
-                        skip_db=agent_persisted,
                     )
                     if response:
                         self.session_store.append_to_transcript(
                             session_entry.session_id,
                             {"role": "assistant", "content": response, "timestamp": ts},
-                            skip_db=agent_persisted,
                         )
                 else:
                     # Attach the inbound platform message_id to the first user
@@ -8691,7 +8689,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _user_msg_id_attached = True
                         self.session_store.append_to_transcript(
                             session_entry.session_id, entry,
-                            skip_db=agent_persisted,
                         )
             
             # Token counts and model are now persisted by the agent directly.

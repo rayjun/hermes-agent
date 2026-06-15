@@ -2090,6 +2090,22 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def get_last_message(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return the most recent message for a session, or None."""
+        if self._conn is None:
+            return None
+        with self._lock:
+            cursor = self._conn.execute(
+                """SELECT role, content FROM messages
+                   WHERE session_id = ?
+                   ORDER BY id DESC LIMIT 1""",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+        if row:
+            return {"role": row["role"], "content": row["content"]}
+        return None
+
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Atomically replace every message for a session.
 

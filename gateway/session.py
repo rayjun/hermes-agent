@@ -1268,12 +1268,28 @@ class SessionStore:
         """Append a message to a session's transcript (SQLite).
 
         Args:
-            skip_db: When True, skip the SQLite write. Used when the agent
-                     already persisted messages to SQLite via its own
-                     _flush_messages_to_session_db(), preventing the
-                     duplicate-write bug (#860).
+            skip_db: When True, skip the SQLite write entirely.  Kept for
+                     backward compatibility with other callers.
         """
         if self._db and not skip_db:
+            role = message.get("role", "unknown")
+            content = message.get("content")
+            # Skip duplicate writes: if the last message in this session
+            # has the same role + content, the agent already persisted it
+            # via _flush_messages_to_session_db() and we should not create
+            # a duplicate row.  This lets the gateway always attempt the
+            # write (surviving process restarts) while avoiding the
+            # double-row bug (#860).
+            try:
+                last = self._db.get_last_message(session_id)
+                if (
+                    last
+                    and last.get("role") == role
+                    and last.get("content") == content
+                ):
+                    return
+            except Exception:
+                pass
             try:
                 self._db.append_message(
                     session_id=session_id,
