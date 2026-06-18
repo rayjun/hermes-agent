@@ -17,7 +17,7 @@ import {
 } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
-import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
+import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import {
   dedupeGeneratedImageEchoesInParts,
   generatedImageEchoSources,
@@ -262,6 +262,8 @@ export function useMessageStream({
   sessionStateByRuntimeIdRef,
   updateSessionState
 }: MessageStreamOptions) {
+  const unscopedStreamSessionIdRef = useRef<string | null>(null)
+
   const sessionInterrupted = useCallback(
     (sessionId: string) => sessionStateByRuntimeIdRef.current.get(sessionId)?.interrupted ?? false,
     [sessionStateByRuntimeIdRef]
@@ -715,11 +717,20 @@ export function useMessageStream({
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
 
-      if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
+      const route = resolveGatewayEventSessionId({
+        activeSessionId: activeSessionIdRef.current,
+        eventType: event.type,
+        explicitSessionId: explicitSid,
+        unscopedStreamSessionId: unscopedStreamSessionIdRef.current
+      })
+
+      unscopedStreamSessionIdRef.current = route.nextUnscopedStreamSessionId
+
+      if (route.drop) {
         return
       }
 
-      const sessionId = explicitSid || activeSessionIdRef.current
+      const sessionId = route.sessionId
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
       if (event.type === 'gateway.ready') {
