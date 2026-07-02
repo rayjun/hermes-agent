@@ -1572,3 +1572,30 @@ class TestMoAContextLength:
             "p", base_url="http://127.0.0.1/v1", provider="moa", config_context_length=500_000
         )
         assert ctx == 500_000
+
+    def test_moa_aggregator_honors_custom_provider_context_length(self, tmp_path, monkeypatch):
+        home = str(tmp_path / ".hermes")
+        monkeypatch.setenv("HERMES_HOME", home)
+        base_url = "https://custom.example/v1"
+        self._write_moa_config(home, {"provider": "custom-agg", "model": "agg-model"})
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested, target_model=None: {"base_url": base_url, "api_key": ""},
+        )
+        monkeypatch.setattr("agent.model_metadata.fetch_endpoint_model_metadata", lambda *args, **kwargs: {})
+        monkeypatch.setattr("agent.model_metadata.fetch_model_metadata", lambda *args, **kwargs: {})
+        monkeypatch.setattr("agent.models_dev.lookup_models_dev_context", lambda *args, **kwargs: None)
+
+        ctx = get_model_context_length(
+            "p",
+            base_url="http://127.0.0.1/v1",
+            provider="moa",
+            custom_providers=[
+                {
+                    "base_url": base_url,
+                    "models": {"agg-model": {"context_length": 1_234_567}},
+                }
+            ],
+        )
+
+        assert ctx == 1_234_567
