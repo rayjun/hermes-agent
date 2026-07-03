@@ -54,6 +54,10 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # interactive matches buried under a wall of cron hits, so this is well above
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
+_DISCOVERY_DEFAULT_LIMIT = 3
+_DISCOVERY_MAX_LIMIT = 10
+_BROWSE_DEFAULT_LIMIT = 25
+_BROWSE_MAX_LIMIT = 50
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -619,7 +623,7 @@ def _discover(
 def session_search(
     query: str = "",
     role_filter: str = None,
-    limit: int = 3,
+    limit: int = None,
     db=None,
     current_session_id: str = None,
     # Scroll shape
@@ -706,17 +710,22 @@ def session_search(
                 return json.dumps(found, ensure_ascii=False)
         return result
 
-    # Limit clamp [1, 10]
+    if not query or not isinstance(query, str) or not query.strip():
+        browse_limit = limit
+        if not isinstance(browse_limit, int):
+            try:
+                browse_limit = int(browse_limit)
+            except (TypeError, ValueError):
+                browse_limit = _BROWSE_DEFAULT_LIMIT
+        browse_limit = max(1, min(browse_limit, _BROWSE_MAX_LIMIT))
+        return _list_recent_sessions(db, browse_limit, current_session_id)
+
     if not isinstance(limit, int):
         try:
             limit = int(limit)
         except (TypeError, ValueError):
-            limit = 3
-    limit = max(1, min(limit, 10))
-
-    # Browse shape: no query → recent sessions.
-    if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+            limit = _DISCOVERY_DEFAULT_LIMIT
+    limit = max(1, min(limit, _DISCOVERY_MAX_LIMIT))
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -907,7 +916,7 @@ registry.register(
     handler=lambda args, **kw: session_search(
         query=args.get("query") or "",
         role_filter=args.get("role_filter"),
-        limit=args.get("limit", 3),
+        limit=args.get("limit"),
         session_id=args.get("session_id"),
         around_message_id=args.get("around_message_id"),
         window=args.get("window", 5),

@@ -149,6 +149,24 @@ class TestBrowseShape:
         titles = [r.get("title") for r in result["results"]]
         assert any("Modpack" in (t or "") for t in titles)
 
+    def test_browse_default_not_capped_by_discovery_limit(self, db):
+        now = int(time.time())
+        for idx in range(10):
+            sid = f"browse_{idx}"
+            db.create_session(sid, source="cli")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+                (now - idx, f"Browse session {idx}", sid),
+            )
+            db.append_message(sid, role="user", content=f"session {idx}")
+        db._conn.commit()
+
+        result = json.loads(session_search(db=db))
+
+        assert result["success"] is True
+        assert result["mode"] == "browse"
+        assert result["count"] == 10
+
 
 # =========================================================================
 # Discovery shape (with query)
