@@ -4,7 +4,15 @@ import { useCallback } from 'react'
 import { getGlobalModelInfo } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
-import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentModel,
+  $currentProvider,
+  $draftModelOverridePending,
+  setCurrentModel,
+  setCurrentProvider,
+  setDraftModelOverridePending
+} from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 interface ModelSelection {
@@ -46,13 +54,13 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
         return
       }
 
-      if (!force && $currentModel.get()) {
+      if (!force && $currentModel.get() && $draftModelOverridePending.get()) {
         return
       }
 
       const result = await getGlobalModelInfo()
 
-      if ($activeSessionId.get() || (!force && $currentModel.get())) {
+      if ($activeSessionId.get() || (!force && $currentModel.get() && $draftModelOverridePending.get())) {
         return
       }
 
@@ -63,6 +71,8 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
       if (typeof result.provider === 'string') {
         setCurrentProvider(result.provider)
       }
+
+      setDraftModelOverridePending(false)
     } catch {
       // The delayed session.info event still updates this once the agent is ready.
     }
@@ -89,6 +99,8 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
       // No live session yet: the pick is pure UI state. session.create reads
       // $currentModel/$currentProvider and applies it as that session's override.
       if (!activeSessionId) {
+        setDraftModelOverridePending(true)
+
         return true
       }
 

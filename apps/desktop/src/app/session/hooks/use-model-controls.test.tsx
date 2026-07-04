@@ -3,7 +3,15 @@ import { cleanup, render, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { getGlobalModelInfo } from '@/hermes'
-import { $activeSessionId, $currentModel, $currentProvider, setCurrentModel, setCurrentProvider } from '@/store/session'
+import {
+  $activeSessionId,
+  $currentModel,
+  $currentProvider,
+  $draftModelOverridePending,
+  setCurrentModel,
+  setCurrentProvider,
+  setDraftModelOverridePending
+} from '@/store/session'
 
 import { useModelControls } from './use-model-controls'
 
@@ -56,6 +64,7 @@ describe('useModelControls', () => {
     $activeSessionId.set(null)
     setCurrentModel('')
     setCurrentProvider('')
+    setDraftModelOverridePending(false)
   })
 
   afterEach(() => {
@@ -64,6 +73,7 @@ describe('useModelControls', () => {
     $activeSessionId.set(null)
     setCurrentModel('')
     setCurrentProvider('')
+    setDraftModelOverridePending(false)
   })
 
   it('applies the global model when there is no active runtime session', async () => {
@@ -149,6 +159,7 @@ describe('useModelControls', () => {
     // the gateway or the profile default here.
     expect($currentModel.get()).toBe('claude-sonnet-4.6')
     expect($currentProvider.get()).toBe('anthropic')
+    expect($draftModelOverridePending.get()).toBe(true)
     expect(requestGateway).not.toHaveBeenCalled()
     expect(setGlobalModel).not.toHaveBeenCalled()
   })
@@ -168,15 +179,16 @@ describe('useModelControls', () => {
     await result.current.refreshCurrentModel()
     expect($currentModel.get()).toBe('openai/gpt-5.5')
 
-    // A user pick must survive the lifecycle refreshes that fire on boot / fresh
-    // draft / session events.
-    setCurrentModel('anthropic/claude-sonnet-4.6')
-    setCurrentProvider('anthropic')
+    // A deliberate draft pick must survive the lifecycle refreshes that fire on
+    // boot / fresh draft / session events.
+    await result.current.selectModel({ model: 'anthropic/claude-sonnet-4.6', provider: 'anthropic' })
     await result.current.refreshCurrentModel()
     expect($currentModel.get()).toBe('anthropic/claude-sonnet-4.6')
 
     // A profile swap forces a reseed to the new profile's default.
+    setDraftModelOverridePending(true)
     await result.current.refreshCurrentModel(true)
     expect($currentModel.get()).toBe('openai/gpt-5.5')
+    expect($draftModelOverridePending.get()).toBe(false)
   })
 })

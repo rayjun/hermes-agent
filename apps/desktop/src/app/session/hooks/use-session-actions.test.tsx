@@ -9,9 +9,13 @@ import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
 import {
   $activeSessionId,
   $currentCwd,
+  $draftModelOverridePending,
   $messages,
   $resumeFailedSessionId,
   setActiveSessionId,
+  setCurrentModel,
+  setCurrentProvider,
+  setDraftModelOverridePending,
   setMessages,
   setResumeFailedSessionId,
   setSessions
@@ -114,6 +118,9 @@ describe('createBackendSessionForSend profile routing', () => {
     $newChatProfile.set(null)
     $activeGatewayProfile.set('default')
     $currentCwd.set('')
+    setCurrentModel('')
+    setCurrentProvider('')
+    setDraftModelOverridePending(false)
     vi.restoreAllMocks()
   })
 
@@ -154,6 +161,28 @@ describe('createBackendSessionForSend profile routing', () => {
     })
 
     expect(params).toMatchObject({ cwd: '/remote/worktree' })
+  })
+
+  it('does not carry the previous session model into a plain new chat', async () => {
+    const params = await createWith(() => {
+      setCurrentModel('stepfun/step-3.7-flash:free')
+      setCurrentProvider('nous')
+      setDraftModelOverridePending(false)
+    })
+
+    expect(params).not.toHaveProperty('model')
+    expect(params).not.toHaveProperty('provider')
+  })
+
+  it('ships an explicit no-session picker choice as a one-shot draft model override', async () => {
+    const params = await createWith(() => {
+      setCurrentModel('claude-sonnet-4.6')
+      setCurrentProvider('anthropic')
+      setDraftModelOverridePending(true)
+    })
+
+    expect(params).toMatchObject({ model: 'claude-sonnet-4.6', provider: 'anthropic' })
+    expect($draftModelOverridePending.get()).toBe(false)
   })
 })
 
