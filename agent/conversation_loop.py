@@ -65,6 +65,19 @@ from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
 
+# Patterns that indicate a post-tool-assistant message is a progress
+# placeholder, not a final answer.  When the model returns short text
+# matching any of these after executing tool calls, the agent nudges
+# it to continue instead of treating the text as the final response.
+_POST_TOOL_PLACEHOLDER_PATTERNS = [
+    "analyzing", "checking", "continuing", "digging", "examining",
+    "exploring", "fetching", "gathering", "generating", "getting",
+    "going", "i'll", "let me", "loading", "looking", "one moment",
+    "one sec", "please wait", "processing", "reading", "researching",
+    "reviewing", "running", "scanning", "searching", "stand by",
+    "starting", "thinking", "waiting", "working",
+]
+
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
@@ -3806,6 +3819,52 @@ def run_conversation(
             else:
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
+
+                # ── Post-tool placeholder guard ──────────────────
+                # Models sometimes return short progress/status text
+                # ("Working on it...", "Writing...", etc.) after tool
+                # results instead of a substantive answer.  Treat these
+                # as incomplete and nudge the model to continue.
+                if final_response.strip():
+                    _recent_tool = any(
+                        m.get("role") == "tool"
+                        for m in messages[-5:]
+                    )
+                    if _recent_tool:
+                        _lower = final_response.strip().lower()
+                        _is_placeholder = (
+                            len(_lower) < 40
+                            and any(
+                                _lower == p or _lower.startswith(p)
+                                for p in _POST_TOOL_PLACEHOLDER_PATTERNS
+                            )
+                        )
+                        if _is_placeholder:
+                            logger.info(
+                                "Post-tool placeholder detected (%r) — "
+                                "nudging model to continue",
+                                final_response.strip(),
+                            )
+                            agent._buffer_status(
+                                "Model returned placeholder after tools — "
+                                "nudging to continue"
+                            )
+                            _nudge = agent._build_assistant_message(
+                                assistant_message, finish_reason
+                            )
+                            messages.append(_nudge)
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "You just executed tool calls and "
+                                    "responded briefly. Please review the "
+                                    "tool results above and continue with "
+                                    "the task. Provide the actual results "
+                                    "or next steps."
+                                ),
+                                "_placeholder_recovery_synthetic": True,
+                            })
+                            continue
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
