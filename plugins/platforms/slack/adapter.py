@@ -63,6 +63,8 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
 
 logger = logging.getLogger(__name__)
 
+_SOCKET_MODE_CLOSE_TIMEOUT = 15.0
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -500,6 +502,8 @@ class SlackAdapter(BasePlatformAdapter):
         self._app_token: Optional[str] = None
         self._proxy_url: Optional[str] = None
         self._socket_watchdog_task: Optional[asyncio.Task] = None
+        self._socket_mode_close_task: Optional[asyncio.Task] = None
+        self._socket_mode_teardown_incomplete = False
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
 
@@ -517,33 +521,96 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_mode_task = task
         task.add_done_callback(self._on_socket_mode_task_done)
 
-    async def _stop_socket_mode_handler(self) -> None:
+    @staticmethod
+    def _consume_socket_mode_close_result(task: asyncio.Task) -> None:
+        try:
+            task.result()
+        except (asyncio.CancelledError, Exception):
+            pass
+
+    async def _stop_socket_mode_handler(
+        self, timeout: Optional[float] = None
+    ) -> bool:
         """Stop Socket Mode handler and task."""
         handler = self._handler
         task = self._socket_mode_task
-        self._handler = None
-        self._socket_mode_task = None
+        deadline = (
+            asyncio.get_running_loop().time() + timeout
+            if timeout is not None
+            else None
+        )
 
         if handler is not None:
+            close_task = self._socket_mode_close_task
+            if close_task is None:
+                close_task = asyncio.get_running_loop().create_task(handler.close_async())
+                close_task.add_done_callback(self._consume_socket_mode_close_result)
+                self._socket_mode_close_task = close_task
+
             try:
-                await handler.close_async()
-            except Exception as e:  # pragma: no cover - defensive logging
+                if deadline is None:
+                    await asyncio.shield(close_task)
+                else:
+                    done, _ = await asyncio.wait(
+                        {close_task}, timeout=max(0.0, deadline - asyncio.get_running_loop().time())
+                    )
+                    if not done:
+                        self._socket_mode_teardown_incomplete = True
+                        logger.warning(
+                            "[Slack] Timed out closing Socket Mode handler"
+                        )
+                        return False
+                close_task.result()
+            except asyncio.CancelledError:
+                if close_task.cancelled():
+                    if self._socket_mode_close_task is close_task:
+                        self._socket_mode_close_task = None
+                    self._socket_mode_teardown_incomplete = True
+                    return False
+                raise
+            except Exception as e:
+                if self._socket_mode_close_task is close_task:
+                    self._socket_mode_close_task = None
+                self._socket_mode_teardown_incomplete = True
                 logger.warning(
                     "[Slack] Error while closing Socket Mode handler: %s",
                     e,
                     exc_info=True,
                 )
+                return False
 
         if task is not None and not task.done():
             task.cancel()
+            if deadline is None:
+                await asyncio.gather(task, return_exceptions=True)
+            else:
+                done, _ = await asyncio.wait(
+                    {task}, timeout=max(0.0, deadline - asyncio.get_running_loop().time())
+                )
+                if not done:
+                    self._socket_mode_teardown_incomplete = True
+                    logger.warning("[Slack] Timed out stopping Socket Mode task")
+                    return False
+
+        if task is not None and task.done():
             try:
-                await task
+                task.result()
             except asyncio.CancelledError:
                 pass
             except Exception:  # pragma: no cover - defensive logging
                 logger.debug(
                     "[Slack] Socket Mode task failed while stopping", exc_info=True
                 )
+
+        if self._handler is handler:
+            self._handler = None
+        if self._socket_mode_task is task:
+            self._socket_mode_task = None
+        close_task = self._socket_mode_close_task
+        if close_task is not None and close_task.done():
+            self._socket_mode_close_task = None
+        self._socket_mode_teardown_incomplete = False
+        return True
 
     async def _socket_transport_connected(self) -> Optional[bool]:
         """Best-effort check of current Socket Mode transport state."""
@@ -576,7 +643,11 @@ class SlackAdapter(BasePlatformAdapter):
                 return
 
             logger.warning("[Slack] Socket Mode unhealthy (%s); reconnecting", reason)
-            await self._stop_socket_mode_handler()
+            stopped = await self._stop_socket_mode_handler(
+                timeout=_SOCKET_MODE_CLOSE_TIMEOUT
+            )
+            if not stopped or not self._running or not self._app or not self._app_token:
+                return
 
             try:
                 self._start_socket_mode_handler()
@@ -647,6 +718,8 @@ class SlackAdapter(BasePlatformAdapter):
     def _on_socket_mode_task_done(self, task: asyncio.Task) -> None:
         # Ignore stale tasks from intentional reconnect/shutdown.
         if task is not self._socket_mode_task:
+            return
+        if self._socket_mode_close_task is not None or self._socket_mode_teardown_incomplete:
             return
         if task.cancelled():
             return
@@ -1061,7 +1134,9 @@ class SlackAdapter(BasePlatformAdapter):
             # connection alive.  Both the old and new connections would otherwise
             # receive every Slack event and dispatch it twice, producing double
             # responses — the same bug that affected DiscordAdapter (#18187).
-            await self._stop_socket_mode_handler()
+            if not await self._stop_socket_mode_handler():
+                self._socket_mode_teardown_incomplete = True
+                return False
             self._app = None
             self._app_token = app_token
             self._proxy_url = proxy_url
@@ -1286,7 +1361,8 @@ class SlackAdapter(BasePlatformAdapter):
             except Exception:
                 self._running = False
                 try:
-                    await self._stop_socket_mode_handler()
+                    if not await self._stop_socket_mode_handler():
+                        self._socket_mode_teardown_incomplete = True
                 except Exception:  # pragma: no cover - defensive logging
                     logger.debug(
                         "[Slack] Cleanup after failed start raised", exc_info=True
@@ -1303,7 +1379,11 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] Connection failed: %s", e, exc_info=True)
             return False
         finally:
-            if lock_acquired and not self._running:
+            if (
+                lock_acquired
+                and not self._running
+                and not self._socket_mode_teardown_incomplete
+            ):
                 self._release_platform_lock()
 
     async def create_handoff_thread(
@@ -1369,7 +1449,9 @@ class SlackAdapter(BasePlatformAdapter):
                     "[Slack] Watchdog task raised during disconnect", exc_info=True
                 )
 
-        await self._stop_socket_mode_handler()
+        if not await self._stop_socket_mode_handler():
+            self._socket_mode_teardown_incomplete = True
+            return
         self._app = None
         self._app_token = None
         self._proxy_url = None
